@@ -7,6 +7,18 @@ import torch.optim as optim
 import torch.nn.functional as F
 import copy
 
+""" FIXME: Some possible problems
+1. We have no biases in our NN
+2. We have no activation functions in our NN (hidden layers)
+3. maybe the render mode "human" is not ideal for this algorithms
+4. There is no Discount factor in value functions and CLIP function
+5. Am I sure that "reward" as target_value is okey?
+6. Maybe the structure of value functions are not ideal, as well as
+   using MSE or the current activation functions
+7. Check the "ratio" from CLIP objective function
+8. Maybe your whole implementation of PPO is not correct, ask.
+"""
+
 EPISODES = 5
 EPISODE_STEPS = 100
 
@@ -95,11 +107,6 @@ class Environment:
                     break
                 time.sleep(0.1)
 
-            ''' 
-                The SGA computation needs to be at the end of the episode? once sum the entire episode clipped
-                surrogate values steps (t)?
-                I'm not even using the loss function that the papers defines, I don't know what that means...
-            '''          
             expected_surrogate_objective = sum(clipped_surrogated_values)
             policy.SGA(expected_surrogate_objective, NN_LEARNING_RATE)
 
@@ -133,7 +140,7 @@ class PolicyNetwork(nn.Module):
             or autograd.grad(). Specify retain_graph=True if you need to backward through the graph a second time or if 
             you need to access saved tensors after calling backward.
         '''
-        optimizer = optim.SGD(self.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         optimizer.zero_grad()
 
         loss = -expected_surrogate_objective
