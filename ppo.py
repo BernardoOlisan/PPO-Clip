@@ -7,30 +7,18 @@ import torch.optim as optim
 import torch.nn.functional as F
 import copy
 
-""" FIXME: Some possible problems
-1. We have no biases in our NN
-2. We have no activation functions in our NN (hidden layers)
-3. maybe the render mode "human" is not ideal for this algorithms
-4. There is no Discount factor in value functions and CLIP function
-5. Am I sure that "reward" as target_value is okey?
-6. Maybe the structure of value functions are not ideal, as well as
-   using MSE or the current activation functions
-7. Check the "ratio" from CLIP objective function
-8. Maybe your whole implementation of PPO is not correct, ask.
-"""
-
-EPISODES = 5
+EPISODES = 5000
 EPISODE_STEPS = 100
 
 NN_INPUT_DIM = 4
-NN_HIDDEN_DIM = 3
+NN_HIDDEN_DIM = 32
 NN_OUTPUT_DIM = 2
-NN_LEARNING_RATE = 0.001
+NN_LEARNING_RATE = 0.01
 
 VALUE_INPUT_DIM = 4
 VALUE_HIDDEN_DIM = 32
 VALUE_ACTION_DIM = 1
-VALUE_LEARNING_RATE = 0.001
+VALUE_LEARNING_RATE = 0.0001
 
 EPSILON = 0.2
 
@@ -53,12 +41,14 @@ class Environment:
             clipped_surrogated_values = []
 
             for step in range(self.EPISODE_STEPS):
+                if step == 90:
+                    print("FOUND IT!")
+                    break
                 print(f"---------------------- STEP [{step}] ----------------------")
 
                 policy_output = policy.forwardPropagation(torch.from_numpy(state))
                 old_policy_output = old_policy.forwardPropagation(torch.from_numpy(state))
                 action = torch.distributions.Categorical(policy_output).sample().item()
-                old_action = torch.distributions.Categorical(old_policy_output).sample().item()
 
                 state, reward, terminated, truncated, info = self.env.step(action)
 
@@ -72,12 +62,10 @@ class Environment:
                 loss_action_value = action_value_function.MSE(predicted_action_value, target_value)
                 action_value_function.SGD(loss_action_value, VALUE_LEARNING_RATE)
 
-                advantage = predicted_state_value - predicted_action_value
-                ratio = torch.tensor((action + 1e-6) / (old_action + 1e-6), dtype=torch.float32)
-                clipped_surrogate_objective = policy.clippedSurrogateObjective(ratio, advantage)
+                advantage = predicted_state_value.detach() - predicted_action_value.detach()
+                ratio = (policy_output + 1e-6) / (old_policy_output + 1e-6)
+                clipped_surrogate_objective = policy.clippedSurrogateObjective(ratio[0], advantage)
                 clipped_surrogated_values.append(clipped_surrogate_objective)
-
-                old_policy = copy.deepcopy(policy)
 
                 # Policy Network Rollout
                 print("Policy Network (π) Rollout:")
@@ -98,20 +86,24 @@ class Environment:
 
                 # Clipped Surrogate Objective at t (J(θ_t))
                 print("Clipped Surrogate Objective at t (J(θ_t)):")
-                print(f"Ratio: {ratio}")
+                print(f"Ratio: {ratio[0]}")
                 print(f"Advantage: {advantage}")
                 print(f"Result: {clipped_surrogate_objective}\n")
 
-                if terminated:
-                    time.sleep(1)
-                    break
-                time.sleep(0.1)
+                # if terminated:
+                #     break
+
+            old_policy = copy.deepcopy(policy)
 
             expected_surrogate_objective = sum(clipped_surrogated_values)
             policy.SGA(expected_surrogate_objective, NN_LEARNING_RATE)
 
             print(f"\nEPISODE DETAILS:")
+            print(f"Episode number: [{episode}]")
             print(f"Expected Surrogate Objective: {expected_surrogate_objective}")
+            print(f"General loss: {-expected_surrogate_objective}")
+
+            time.sleep(1)
 
         self.env.close()
 
@@ -134,15 +126,8 @@ class PolicyNetwork(nn.Module):
         return torch.min(first_value, second_value)
 
     def SGA(self, expected_surrogate_objective, learning_rate):
-        ''' Error in here...
-            RuntimeError: Trying to backward through the graph a second time (or directly access saved tensors after 
-            they have already been freed). Saved intermediate values of the graph are freed when you call .backward() 
-            or autograd.grad(). Specify retain_graph=True if you need to backward through the graph a second time or if 
-            you need to access saved tensors after calling backward.
-        '''
-        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        optimizer = optim.SGD(self.parameters(), lr=learning_rate)
         optimizer.zero_grad()
-
         loss = -expected_surrogate_objective
         loss.backward()
         optimizer.step()
