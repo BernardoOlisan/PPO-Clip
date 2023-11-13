@@ -5,15 +5,22 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 import copy
 
-EPISODES = 5000
+EPISODES = 2
 EPISODE_STEPS = 100
+
+"""
+TODO:
+1. If you see a good graph (losses, expected), try 10000 episodes despending
+   on the results in terminated-episodes and full-episodes graphs. 
+"""
 
 NN_INPUT_DIM = 4
 NN_HIDDEN_DIM = 32
 NN_OUTPUT_DIM = 2
-NN_LEARNING_RATE = 0.01
+NN_LEARNING_RATE = 0.00001
 
 VALUE_INPUT_DIM = 4
 VALUE_HIDDEN_DIM = 32
@@ -32,6 +39,9 @@ class Environment:
     def rollouts(self, policy, state_value_function, action_value_function):
         old_policy = copy.deepcopy(policy)
 
+        losses = []
+        expected_surrogate_objective_values = []
+
         for episode in range(self.EPISODES):
             print(f"###################################### EPISODE [{episode}] ######################################")
 
@@ -44,7 +54,7 @@ class Environment:
                 if step == 90:
                     print("FOUND IT!")
                     break
-                print(f"---------------------- STEP [{step}] ----------------------")
+                # print(f"---------------------- STEP [{step}] ----------------------")
 
                 policy_output = policy.forwardPropagation(torch.from_numpy(state))
                 old_policy_output = old_policy.forwardPropagation(torch.from_numpy(state))
@@ -67,35 +77,37 @@ class Environment:
                 clipped_surrogate_objective = policy.clippedSurrogateObjective(ratio[0], advantage)
                 clipped_surrogated_values.append(clipped_surrogate_objective)
 
-                # Policy Network Rollout
-                print("Policy Network (π) Rollout:")
-                print(f"Policy NN output: {policy_output}")
-                print(f"Old Policy NN output: {old_policy_output}")
-                print(f"Selected action: {action}")
-                print(f"Reward received: {reward}\n")
+                # # Policy Network Rollout
+                # print("Policy Network (π) Rollout:")
+                # print(f"Policy NN output: {policy_output}")
+                # print(f"Old Policy NN output: {old_policy_output}")
+                # print(f"Selected action: {action}")
+                # print(f"Reward received: {reward}\n")
 
-                # State Value Function (V(s))
-                print("State Value Function (V(s)):")
-                print(f"Predicted Value: {predicted_state_value}")
-                print(f"Loss (V(s)): {loss_state_value}\n")
+                # # State Value Function (V(s))
+                # print("State Value Function (V(s)):")
+                # print(f"Predicted Value: {predicted_state_value}")
+                # print(f"Loss (V(s)): {loss_state_value}\n")
 
-                # Action Value Function (Q(s, a))
-                print("Action Value Function (Q(s, a)):")
-                print(f"Predicted Value: {predicted_action_value}")
-                print(f"Loss (Q(s, a)): {loss_action_value}\n")
+                # # Action Value Function (Q(s, a))
+                # print("Action Value Function (Q(s, a)):")
+                # print(f"Predicted Value: {predicted_action_value}")
+                # print(f"Loss (Q(s, a)): {loss_action_value}\n")
 
-                # Clipped Surrogate Objective at t (J(θ_t))
-                print("Clipped Surrogate Objective at t (J(θ_t)):")
-                print(f"Ratio: {ratio[0]}")
-                print(f"Advantage: {advantage}")
-                print(f"Result: {clipped_surrogate_objective}\n")
+                # # Clipped Surrogate Objective at t (J(θ_t))
+                # print("Clipped Surrogate Objective at t (J(θ_t)):")
+                # print(f"Ratio: {ratio[0]}")
+                # print(f"Advantage: {advantage}")
+                # print(f"Result: {clipped_surrogate_objective}\n")
 
-                # if terminated:
-                #     break
+                if terminated:
+                    break
 
             old_policy = copy.deepcopy(policy)
 
             expected_surrogate_objective = sum(clipped_surrogated_values)
+            expected_surrogate_objective_values.append(expected_surrogate_objective.item())
+            losses.append(-expected_surrogate_objective.item())
             policy.SGA(expected_surrogate_objective, NN_LEARNING_RATE)
 
             print(f"\nEPISODE DETAILS:")
@@ -103,10 +115,20 @@ class Environment:
             print(f"Expected Surrogate Objective: {expected_surrogate_objective}")
             print(f"General loss: {-expected_surrogate_objective}")
 
+            if episode % 500 == 0:
+                plt.plot(expected_surrogate_objective_values, label='CLIP', marker='o', linestyle='-', color='blue')
+                plt.plot(losses, label='loss', marker='x', linestyle='-', color='red')
+                plt.xlabel('Episode')
+                plt.ylabel('Expected Surrogate Objective')
+                plt.title('Positive and Negative Surrogate Objectives Over Time')
+                plt.legend()
+
+                plt.savefig(f'episode_{episode}.png')
+                plt.clf()
+
             time.sleep(1)
 
         self.env.close()
-
 
 class PolicyNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
