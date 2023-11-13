@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import copy
 
-EPISODES = 2
+EPISODES = 10000
 EPISODE_STEPS = 100
 
 """
@@ -123,7 +123,7 @@ class Environment:
                 plt.title('Positive and Negative Surrogate Objectives Over Time')
                 plt.legend()
 
-                plt.savefig(f'episode_{episode}.png')
+                plt.savefig(f'plots/episode_{episode}.png')
                 plt.clf()
 
             time.sleep(1)
