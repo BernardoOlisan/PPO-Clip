@@ -8,14 +8,8 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import copy
 
-EPISODES = 10000
-EPISODE_STEPS = 100
-
-"""
-TODO:
-1. If you see a good graph (losses, expected), try 10000 episodes despending
-   on the results in terminated-episodes and full-episodes graphs. 
-"""
+EPISODES = 501
+EPISODE_STEPS = 200
 
 NN_INPUT_DIM = 4
 NN_HIDDEN_DIM = 32
@@ -115,7 +109,7 @@ class Environment:
             print(f"Expected Surrogate Objective: {expected_surrogate_objective}")
             print(f"General loss: {-expected_surrogate_objective}")
 
-            if episode % 500 == 0:
+            if episode % 100 == 0:
                 plt.plot(expected_surrogate_objective_values, label='CLIP', marker='o', linestyle='-', color='blue')
                 plt.plot(losses, label='loss', marker='x', linestyle='-', color='red')
                 plt.xlabel('Episode')
@@ -148,7 +142,7 @@ class PolicyNetwork(nn.Module):
         return torch.min(first_value, second_value)
 
     def SGA(self, expected_surrogate_objective, learning_rate):
-        optimizer = optim.SGD(self.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         optimizer.zero_grad()
         loss = -expected_surrogate_objective
         loss.backward()
@@ -172,7 +166,7 @@ class StateValueFunction(nn.Module):
         return loss
 
     def SGD(self, loss, learning_rate):
-        optimizer = optim.SGD(self.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -196,7 +190,7 @@ class ActionValueFunction(nn.Module):
         return loss
 
     def SGD(self, loss, learning_rate):
-        optimizer = optim.SGD(self.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
