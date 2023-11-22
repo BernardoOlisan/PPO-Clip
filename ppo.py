@@ -1,199 +1,198 @@
-import gym
-import time
+import os
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
-import copy
+from torch.distributions.categorical import Categorical 
 
-EPISODES = 500
-EPISODE_STEPS = 200
+class PPOBuffer:
+    def __init__(self, batch_size):
+        self.states = []
+        self.probs = []
+        self.vals = []
+        self.actions = []
+        self.rewards = []
+        self.dones = []
 
-POLICY_INPUT_DIM = 4
-POLICY_HIDDEN_DIM = 32
-POLICY_OUTPUT_DIM = 2
-POLICY_LEARNING_RATE = 3e-4
+        self.batch_size = batch_size
 
-VALUE_INPUT_DIM = 4
-VALUE_HIDDEN_DIM = 32
-VALUE_ACTION_DIM = 1
-VALUE_LEARNING_RATE = 3e-4
+    def generate_batches(self):
+        n_states = len(self.states)
+        batch_start = np.arange(0, n_states, self.batch_size)
+        indices = np.arange(n_states, dtype=np.int64)
+        np.random.shuffle(indices)
+        batches = [indices[i:i+self.batch_size] for i in batch_start]
 
-EPSILON = 0.2
-DISCOUNT_FACTOR = 0.99
+        return np.array(self.states),\
+                np.array(self.actions),\
+                np.array(self.probs),\
+                np.array(self.vals),\
+                np.array(self.rewards),\
+                np.array(self.dones),\
+                batches
 
+    def store(self, state, action, probs, vals, reward, done):
+        self.states.append(state)
+        self.actions.append(action)
+        self.probs.append(probs)
+        self.vals.append(vals)
+        self.rewards.append(reward)
+        self.dones.append(done)  
 
-class EpisodeBuffer:
-    def __init__(self, episode_steps, state_dim, output_dim, discount_factor=0.99):
-        self.states = torch.zeros(episode_steps, state_dim)
-        self.actions = torch.zeros(episode_steps)
-        self.policy_outputs = torch.zeros(episode_steps, output_dim)
-        self.old_policy_outputs = torch.zeros(episode_steps, output_dim)
-        self.discounted_rewards = torch.zeros(episode_steps)
-        self.clipped_surrogate_values = torch.zeros(episode_steps)
+    def clear(self):
+        self.states = []
+        self.probs = []
+        self.actions = []
+        self.rewards = []
+        self.dones = []
+        self.vals = []
+
+class ActorNetwork(nn.Module):
+    def __init__(self, input_dims, output_dim, learning_rate, 
+                 fc1_dims=256, fc2_dims=256, chkpt_dir="tmp/ppo"):
+        super(ActorNetwork, self).__init__()
+        
+        self.checkpoint_file = os.path.join(chkpt_dir, "actor_torch_ppo")
+        self.actor = nn.Sequential(                
+                nn.Linear(*input_dims, fc1_dims),
+                nn.ReLU(),
+                nn.Linear(fc1_dims, fc2_dims),
+                nn.ReLU(),
+                nn.Linear(fc2_dims, output_dim),
+                nn.Softmax(dim=-1)
+        )
+
+        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        
+    def forward(self, state):
+        dist = self.actor(state)
+        dist = Categorical(dist)
+
+        return dist
+    
+    def save_checkpoint(self):
+        torch.save(self.state_dict(), self.checkpoint_file)
+
+    def load_checkpoint(self):
+        torch.load_state_dict(torch.load(self.checkpoint_file))
+
+class CriticNetwork(nn.Module):
+    def __init__(self, input_dims, learning_rate, fc1_dims=256, 
+                 fc2_dims=256, chkpt_dir="tmp/ppo"):
+        super(CriticNetwork, self).__init__()
+
+        self.checkpoint_file = os.path.join(chkpt_dir, "critic_torch_ppo")
+        self.critic = nn.Sequential(
+                nn.Linear(*input_dims, fc1_dims),
+                nn.ReLU(),
+                nn.Linear(fc1_dims, fc2_dims),
+                nn.ReLU(),
+                nn.Linear(fc2_dims, 1),
+        )
+
+        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        
+    def forward(self, state):
+        value = self.critic(state)
+
+        return value 
+    
+    def save_checkpoint(self):
+        torch.save(self.state_dict(), self.checkpoint_file)
+
+    def load_checkpoint(self):
+        torch.load_state_dict(torch.load(self.checkpoint_file))
+
+class Agent:
+    def __init__(self, n_actions, input_dims, learning_rate=3e-4, 
+                 discount_factor=0.99, gae_lambda=0.95, clip=0.2, 
+                 batch_size=64, n_epochs=10):
         self.discount_factor = discount_factor
-        self.episode_length = 0
+        self.clip = clip 
+        self.n_epochs = n_epochs
+        self.gae_lambda = gae_lambda
 
-    def storeExperiences(self, step, policy_output, old_policy_output, state, action, reward):
-        self.states[step] = state
-        self.actions[step] = action
-        self.policy_outputs[step] = policy_output
-        self.old_policy_outputs[step] = old_policy_output
-        self.discounted_rewards[step] = reward * self.discount_factor
-        self.episode_length = step
+        self.actor = ActorNetwork(input_dims, n_actions, learning_rate)
+        self.critic = CriticNetwork(input_dims, learning_rate)
+        self.buffer = PPOBuffer(batch_size)
 
-    def storeObjectivesValues(self, step, clipped_surrogate_objective):
-        self.clipped_surrogate_values[step] = clipped_surrogate_objective
+    def remember(self, state, action, probs, vals, reward, done):
+        self.buffer.store(state, action, probs, vals, reward, done)
 
-    def getDiscountedCumulativeRewards(self):
-        return sum(self.discounted_rewards)
+    def save_models(self):
+        print("... saving models ...")
+        self.actor.save_checkpoint()
+        self.critic.save_checkpoint()
     
-    def getExpectedSurrogateObjective(self):
-        return sum(self.clipped_surrogate_values)
+    def load_models(self):
+        print("... loading models ...")
+        self.actor.load_checkpoint()
+        self.critic.load_checkpoint()
 
-class PolicyNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, learning_rate):
-        super(PolicyNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+    def choose_action(self, observation):
+        state = torch.tensor(observation, dtype=torch.float)
 
-    def forwardPropagation(self, X):
-        Y = torch.relu(self.fc1(X))
-        Z = self.fc2(Y)
-        z_hat = F.softmax(Z, dim=-1)
-        return z_hat
+        dist = self.actor(state)
+        value = self.critic(state)
+        action = dist.sample()
+
+        probs = torch.squeeze(dist.log_prob(action)).item()
+        action = torch.squeeze(action).item()
+        value = torch.squeeze(value).item()
+
+        return action, probs, value 
     
-    def clippedSurrogateObjective(self, ratio, advantage):
-        first_value = ratio * advantage
-        second_value = torch.clamp(ratio, 1 - EPSILON, 1 + EPSILON) * advantage
-        return torch.min(first_value, second_value)
+    def learn(self):
+        for _ in range(self.n_epochs):
+            state_arr, action_arr, old_probs_arr, vals_arr,\
+            reward_arr, dones_arr, batches = self.buffer.generate_batches()
 
-    def SGA(self, expected_surrogate_objective):
-        self.optimizer.zero_grad()
-        loss = -expected_surrogate_objective
-        loss.backward()
-        self.optimizer.step()
+            values = vals_arr
+            advantage = np.zeros(len(reward_arr), dtype=np.float32)
 
-class StateValueFunction(nn.Module):
-    def __init__(self, input_dim, hidden_dim, learning_rate):
-        super(StateValueFunction, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)
-        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+            for t in range(len(reward_arr)-1):
+                discount = 1
+                a_t = 0
+                for k in range(t, len(reward_arr)-1):
+                    a_t += discount * (reward_arr[k] + self.discount_factor*values[k+1] * \
+                                     (1 - int(dones_arr[k])) - values[k])
+                    discount *= self.discount_factor * self.gae_lambda
+                advantage[t] = a_t
+            advantage = torch.tensor(advantage)
 
-    def forwardPropagation(self, state):
-        x = torch.relu(self.fc1(state))
-        value = self.fc2(x)
-        return value
-    
-    def MSE(self, predicted_value, target_value):
-        criterion = nn.MSELoss()
-        loss = criterion(predicted_value, target_value)
-        return loss
+            values = torch.tensor(values)
+            for batch in batches:
+                states = torch.tensor(state_arr[batch], dtype=torch.float)
+                old_probs = torch.tensor(old_probs_arr[batch])
+                actions = torch.tensor(action_arr[batch])
 
-    def SGD(self, loss):
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-    
-class ActionValueFunction(nn.Module):
-    def __init__(self, input_dim, action_dim, hidden_dim, learning_rate):
-        super(ActionValueFunction, self).__init__()
-        self.fc1 = nn.Linear(input_dim + action_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)
-        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+                dist = self.actor(states)
+                critic_value = self.critic(states)
 
-    def forwardPropagation(self, state, action):
-        x = torch.cat((state, action.reshape(1)), dim=0)
-        x = torch.relu(self.fc1(x))
-        value = self.fc2(x)
-        return value
-    
-    def MSE(self, predicted_value, target_value):
-        criterion = nn.MSELoss()
-        loss = criterion(predicted_value, target_value)
-        return loss
+                new_probs = dist.log_prob(actions)
+                prob_ratio = new_probs.exp() / old_probs.exp()
+                weighted_probs = prob_ratio * advantage[batch]
+                weighted_clipped_probs = torch.clamp(prob_ratio, 1-self.clip,\
+                                                     1+self.clip) * advantage[batch]
+                actor_loss = -torch.min(weighted_probs, weighted_clipped_probs).mean()
 
-    def SGD(self, loss):
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+                returns = advantage[batch] + values[batch]
+                critic_loss = (returns - critic_value)**2
+                critic_loss = critic_loss.mean()
 
-def main():
-    policy = PolicyNetwork(POLICY_INPUT_DIM, POLICY_HIDDEN_DIM, POLICY_OUTPUT_DIM, POLICY_LEARNING_RATE) # π(s|a;0)
-    old_policy = copy.deepcopy(policy) # π_old(s|a;0)
-    state_value_function = StateValueFunction(VALUE_INPUT_DIM, VALUE_HIDDEN_DIM, VALUE_LEARNING_RATE) # V(s)
-    action_value_function = ActionValueFunction(VALUE_INPUT_DIM, VALUE_ACTION_DIM, VALUE_HIDDEN_DIM, VALUE_LEARNING_RATE) # Q(s,a)
+                total_loss = actor_loss + 0.5*critic_loss
+                self.actor.optimizer.zero_grad()
+                self.critic.optimizer.zero_grad()
+                total_loss.backward()
+                self.actor.optimizer.step()
+                self.critic.optimizer.step()
 
-    expected_surrogate_objective_values = []
+        self.buffer.clear()
 
-    env = gym.make("CartPole-v1", render_mode="human")
-    for episode in range(EPISODES):
-        (state, _) = env.reset()
-        env.render()
 
-        episode_buffer = EpisodeBuffer(EPISODE_STEPS, POLICY_INPUT_DIM, POLICY_OUTPUT_DIM, DISCOUNT_FACTOR)
-
-        # Collect Experiences
-        for step in range(EPISODE_STEPS):
-            policy_output = policy.forwardPropagation(torch.from_numpy(state))
-            old_policy_output = old_policy.forwardPropagation(torch.from_numpy(state))
-            action = torch.distributions.Categorical(policy_output).sample().item()
-
-            state, reward, terminated, truncated, info = env.step(action)
-
-            episode_buffer.storeExperiences(step, policy_output, old_policy_output, torch.tensor(state), action, reward)
-
-            if terminated:
-                break
-
-        # Optimization Phase
-        discounted_cumulative_rewards = episode_buffer.getDiscountedCumulativeRewards()
-        for episode_step in range(episode_buffer.episode_length):
-            state = episode_buffer.states[episode_step]
-            action = episode_buffer.actions[episode_step]
-            policy_output = episode_buffer.policy_outputs[episode_step]
-            old_policy_output = episode_buffer.old_policy_outputs[episode_step]
-
-            predicted_state_value = state_value_function.forwardPropagation(state)
-            predicted_action_value = action_value_function.forwardPropagation(state, action)
-
-            loss_state_value = state_value_function.MSE(predicted_state_value, discounted_cumulative_rewards.reshape(1))
-            loss_action_value = action_value_function.MSE(predicted_action_value, discounted_cumulative_rewards.reshape(1))
-
-            state_value_function.SGD(loss_state_value)
-            action_value_function.SGD(loss_action_value)
-
-            advantage = predicted_state_value.detach() - predicted_action_value.detach()
-            ratio = (policy_output + 1e-6) / (old_policy_output + 1e-6)
-            clipped_surrogate_objective = policy.clippedSurrogateObjective(ratio[0], advantage)
-            episode_buffer.storeObjectivesValues(episode_step, clipped_surrogate_objective)
-
-        old_policy = copy.deepcopy(policy)
-
-        expected_surrogate_objective = episode_buffer.getExpectedSurrogateObjective()
-        expected_surrogate_objective_values.append(expected_surrogate_objective.item())
-        policy.SGA(expected_surrogate_objective)
-
-        print(f"\nEPISODE DETAILS:")
-        print(f"Episode number: [{episode}]")
-        print(f"Discounted Cumulative Rewards (G): {discounted_cumulative_rewards}")
-        print(f"Expected Surrogate Objective (J): {expected_surrogate_objective}")
-
-        if episode % 100 == 0:
-            plt.plot(expected_surrogate_objective_values)
-            plt.xlabel('Episode')
-            plt.ylabel('Expected Surrogate Objective')
-            plt.title('Expected Surrogate Objectives Over Time')
-
-            plt.savefig(f'new_plots/episode_{episode}.png')
-            plt.clf()
-
-        time.sleep(1)
-
-    env.close()
-
-if __name__ == "__main__": 
-    main()
+        
+        
+        
+        
+     
+            
