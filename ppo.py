@@ -65,10 +65,10 @@ class ActorNetwork(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         
     def forward(self, state):
-        dist = self.actor(state)
-        dist = Categorical(dist)
+        distribution = self.actor(state)
+        distribution = Categorical(distribution)
 
-        return dist
+        return distribution
     
     def save_checkpoint(self):
         torch.save(self.state_dict(), self.checkpoint_file)
@@ -132,11 +132,11 @@ class Agent:
     def choose_action(self, observation):
         state = torch.tensor(observation, dtype=torch.float)
 
-        dist = self.actor(state)
+        distribution = self.actor(state)
         value = self.critic(state)
-        action = dist.sample()
+        action = distribution.sample()
 
-        probs = torch.squeeze(dist.log_prob(action)).item()
+        probs = torch.squeeze(distribution.log_prob(action)).item()
         action = torch.squeeze(action).item()
         value = torch.squeeze(value).item()
 
@@ -154,7 +154,7 @@ class Agent:
                 discount = 1
                 a_t = 0
                 for k in range(t, len(reward_arr)-1):
-                    a_t += discount * (reward_arr[k] + self.discount_factor*values[k+1] * \
+                    a_t += discount * (reward_arr[k] + self.discount_factor * values[k+1] * \
                                      (1 - int(dones_arr[k])) - values[k])
                     discount *= self.discount_factor * self.gae_lambda
                 advantage[t] = a_t
@@ -166,10 +166,10 @@ class Agent:
                 old_probs = torch.tensor(old_probs_arr[batch])
                 actions = torch.tensor(action_arr[batch])
 
-                dist = self.actor(states)
+                distribution = self.actor(states)
                 critic_value = self.critic(states)
 
-                new_probs = dist.log_prob(actions)
+                new_probs = distribution.log_prob(actions)
                 prob_ratio = new_probs.exp() / old_probs.exp()
                 weighted_probs = prob_ratio * advantage[batch]
                 weighted_clipped_probs = torch.clamp(prob_ratio, 1-self.clip,\

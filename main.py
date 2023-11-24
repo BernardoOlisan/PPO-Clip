@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     for episode in range(EPISODES):
         (observation, _) = env.reset()
-        done = False 
+        done = False
         truncated = False
         score = 0
         while not done or not truncated:
